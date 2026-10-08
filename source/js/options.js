@@ -1,4 +1,7 @@
 // vim: set ts=2 sw=2 et
+import "./lib/browser-polyfill.js";
+import { getSettings, setSettings, saveToSync, migrateFromLocalStorage } from "./storage.js";
+
 const ERROR_BACKGROUND_COLOR = '#ffbbbb';
 const FADE_DELAY = 2000;
 
@@ -11,26 +14,28 @@ function getBrowserName() {
   }
 }
 
-function save_options() {
+async function save_options() {
   if (!validate_options()) return;
 
-  localStorage.click_page = $('#click_page').val();
-  localStorage.show_notifications = $('#show_notifications').prop('checked') ? 'yes' : 'no';
-  localStorage.notification_timeout = parseInt($('#notification_timeout').val());
-  localStorage.force_http = $('#force_http').prop('checked') ? 'yes' : 'no';
-  localStorage.prefer_pinned_tab = $('#prefer_pinned_tab').prop('checked') ? 'yes' : 'no';
-  localStorage.refresh_interval = parseInt($('#refresh_interval').val());
-  localStorage.use_sync = $('#use_sync').prop('checked') ? 'yes' : 'no';
-  localStorage.context_menu = $('#context_menu').prop('checked') ? 'yes' : 'no';
+  const settings = {
+    click_page: $('#click_page').val(),
+    show_notifications: $('#show_notifications').prop('checked') ? 'yes' : 'no',
+    notification_timeout: String(parseInt($('#notification_timeout').val())),
+    force_http: $('#force_http').prop('checked') ? 'yes' : 'no',
+    prefer_pinned_tab: $('#prefer_pinned_tab').prop('checked') ? 'yes' : 'no',
+    refresh_interval: String(parseInt($('#refresh_interval').val())),
+    use_sync: $('#use_sync').prop('checked') ? 'yes' : 'no',
+    context_menu: $('#context_menu').prop('checked') ? 'yes' : 'no',
+  };
+
+  // The background script reacts to these changes (context menus, refresh schedule)
+  await setSettings(settings);
 
   show_message({text: browser.i18n.getMessage('optionsSaved_success'), fade_in: true, fade_out: true});
 
-  if (localStorage.use_sync != "no") {
-    browser.runtime.sendMessage({sync: true}).then(syncCallback).catch(syncError);
+  if (settings.use_sync != "no") {
+    syncCallback(await saveToSync());
   }
-
-  // According to the current state, enable or disable the context menus
-  browser.runtime.sendMessage({toggleContextMenus: true});
 }
 
 function syncCallback(result) {
@@ -39,10 +44,6 @@ function syncCallback(result) {
   } else {
     show_message({text: browser.i18n.getMessage('optionsSaved_successButSyncRetry'), fade_in: true, red: true});
   }
-}
-
-function syncError(error) {
-  console.error("Could not communicate with the extension!", error);
 }
 
 function validate_options() {
@@ -65,22 +66,23 @@ function validate_options() {
   }
 }
 
-function load_options() {
-  if (localStorage.click_page) {
-    $('#click_page').val(localStorage.click_page);
-  }
-  $('#show_notifications').prop('checked', (localStorage.show_notifications == 'yes'));
-  $('#prefer_pinned_tab').prop('checked', (localStorage.prefer_pinned_tab == 'yes'));
-  $('#notification_timeout').val(localStorage.notification_timeout || 0);
-  $('#force_http').prop('checked', (localStorage.force_http == 'yes'));
-  $('#refresh_interval').val(localStorage.refresh_interval || 15);
-  $('#use_sync').prop('checked', (localStorage.use_sync != 'no'));
-  $('#context_menu').prop('checked', (localStorage.context_menu != 'no'));
+async function load_options() {
+  const settings = await getSettings();
+
+  $('#click_page').val(settings.click_page);
+  $('#show_notifications').prop('checked', (settings.show_notifications == 'yes'));
+  $('#prefer_pinned_tab').prop('checked', (settings.prefer_pinned_tab == 'yes'));
+  $('#notification_timeout').val(settings.notification_timeout);
+  $('#force_http').prop('checked', (settings.force_http == 'yes'));
+  $('#refresh_interval').val(settings.refresh_interval);
+  $('#use_sync').prop('checked', (settings.use_sync != 'no'));
+  $('#context_menu').prop('checked', (settings.context_menu != 'no'));
+  $('#notification_timeout').closest('.subitem').toggle(settings.show_notifications == 'yes');
 }
 
-function onMessageOptions(request) {
+async function onMessageOptions(request) {
   if (request.update) {
-    load_options();
+    await load_options();
     let syncServiceName;
     switch (getBrowserName()) {
       case 'Mozilla':
@@ -157,14 +159,17 @@ function toggleChangelog(e) {
   $("#changelogHideLink").toggleClass('invisible');
 }
 
-$(document).ready(function() {
+$(document).ready(async function() {
   // i18n
   for (let element of document.querySelectorAll('[data-i18n-id]')) {
     element.textContent = browser.i18n.getMessage(element.dataset.i18nId);
   }
 
   showReviewsLink();
-  load_options();
+  // Settings saved by versions <= 1.5.3 in localStorage; the Chrome service
+  // worker cannot read them, but this page can.
+  await migrateFromLocalStorage();
+  await load_options();
 
   fetch('ChangeLog').then(function(response) {
     return response.text();
@@ -188,7 +193,6 @@ $(document).ready(function() {
   });
 
   // Show/animate subitem
-  $('#notification_timeout').closest('.subitem').toggle(localStorage.show_notifications == 'yes');
   $('#show_notifications').click(function() {
     if ($('#show_notifications').prop('checked')) {
       $('#notification_timeout').closest('.subitem').slideDown('fast');
